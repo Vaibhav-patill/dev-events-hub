@@ -1,52 +1,66 @@
-import mongoose, { Mongoose } from "mongoose";
+import mongoose from 'mongoose';
 
-// Ensure the MONGODB_URI environment variable is set
-const MONGODB_URI = process.env.MONGODB_URI;
+// Define the connection cache type
+type MongooseCache = {
+  conn: typeof mongoose | null;
+  promise: Promise<typeof mongoose> | null;
+};
 
-if (!MONGODB_URI) {
-  throw new Error(
-    "Define the MONGODB_URI environment variable in .env.local"
-  );
-}
-
-// Cached connection interface to avoid reconnecting on every request in dev
-interface MongooseCache {
-  conn: Mongoose | null;
-  promise: Promise<Mongoose> | null;
-}
-
-// Extend the Node.js global type to include our mongoose cache
+// Extend the global object to include our mongoose cache
 declare global {
   // eslint-disable-next-line no-var
   var mongoose: MongooseCache | undefined;
 }
 
-// Reuse the cached connection if it exists, otherwise initialize it
-const cached: MongooseCache = global.mongoose ?? { conn: null, promise: null };
+const MONGODB_URI = process.env.MONGODB_URI;
 
-// Persist the cache on the global object so it survives HMR in development
-global.mongoose = cached;
+
+// Initialize the cache on the global object to persist across hot reloads in development
+let cached: MongooseCache = global.mongoose || { conn: null, promise: null };
+
+if (!global.mongoose) {
+  global.mongoose = cached;
+}
 
 /**
- * Connects to MongoDB and returns the Mongoose instance.
- * The connection is cached globally so subsequent calls reuse
- * the same connection instead of opening a new one.
+ * Establishes a connection to MongoDB using Mongoose.
+ * Caches the connection to prevent multiple connections during development hot reloads.
+ * @returns Promise resolving to the Mongoose instance
  */
-async function connectToDatabase(): Promise<Mongoose> {
-  // Return the existing connection immediately if available
-  if (cached.conn) return cached.conn;
+async function connectDB(): Promise<typeof mongoose> {
+  // Return existing connection if available
+  if (cached.conn) {
+    return cached.conn;
+  }
 
-  // Create a new connection promise if one doesn't exist yet
+  // Return existing connection promise if one is in progress
   if (!cached.promise) {
-    cached.promise = mongoose.connect(MONGODB_URI as string, {
-      dbName: "jsmasteryprojdb",
-      bufferCommands: false,
+    // Validate MongoDB URI exists
+    if (!MONGODB_URI) {
+      throw new Error(
+        'Please define the MONGODB_URI environment variable inside .env.local'
+      );
+    }
+    const options = {
+      bufferCommands: false, // Disable Mongoose buffering
+    };
+
+    // Create a new connection promise
+    cached.promise = mongoose.connect(MONGODB_URI!, options).then((mongoose) => {
+      return mongoose;
     });
   }
 
-  // Await the connection and cache the result
-  cached.conn = await cached.promise;
+  try {
+    // Wait for the connection to establish
+    cached.conn = await cached.promise;
+  } catch (error) {
+    // Reset promise on error to allow retry
+    cached.promise = null;
+    throw error;
+  }
+
   return cached.conn;
 }
 
-export default connectToDatabase;
+export default connectDB;
